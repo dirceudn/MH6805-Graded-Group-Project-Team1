@@ -1,484 +1,306 @@
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from matplotlib import pyplot as plt
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import confusion_matrix, classification_report, roc_auc_score, precision_recall_curve, f1_score
-import warnings
 import xgboost as xgb
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.inspection import permutation_importance
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.model_selection import GridSearchCV
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVR
 
-warnings.filterwarnings('ignore', category=FutureWarning)
-
-def get_data_frame():
+class BitcoinAnalysis:
     """
-        Load and return the Bitcoin dataset from CSV file.
+    A class for analyzing Bitcoin data in relation to NASDAQ and Gold market data.
 
-        Returns:
-            pd.DataFrame: Raw Bitcoin dataset containing various price metrics and technical indicators.
-
-        Notes:
-            - Uses pandas.read_csv() for data loading
-            - Assumes file is in current working directory
-            - No preprocessing applied at this stage
+    Attributes:
+        gold_data (pd.DataFrame): DataFrame containing gold market data.
+        nasdaq_data (pd.DataFrame): DataFrame containing NASDAQ market data.
+        btc_data (pd.DataFrame): DataFrame containing Bitcoin market data.
+        file_path (str): Path to the dataset file.
+        df (pd.DataFrame): DataFrame containing the loaded dataset.
     """
-    df = pd.read_csv("bitcoin_dataset.csv")
-    return df
 
-def convert_df_date_time():
-    """
-        Convert date column to datetime format and set as index.
-
-        Returns:
-            pd.DataFrame: Time-series indexed dataframe with datetime index
-
-        Methods:
-            - pd.to_datetime(): Convert string dates to datetime objects
-            - set_index(): Set 'Date' as dataframe index
-            - sort_index(): Ensure chronological ordering
-    """
-    df = get_data_frame()
-    df['Date'] = pd.to_datetime(df['Date'])
-    df.set_index('Date', inplace=True)
-    return df
-
-def get_df_standardized():
-    """
-    Standardize numerical features using z-score normalization.
-
-    Returns:
-        pd.DataFrame: Standardized dataframe with all features except 'Trend' normalized
-
-    Methods:
-        - StandardScaler(): Normalize features to mean=0, std=1
-        - pandas.DataFrame.copy(): Create copy to avoid modifying original data
-        - df.columns.difference(): Exclude 'Trend' column from scaling
-    """
-    df = convert_df_date_time()
-    df.sort_index(inplace=True)  # Ensure time-series order
-    ft_columns = df.columns.difference(['Trend']) if 'Trend' in df.columns else df.columns
-
-    scaler = StandardScaler()
-    data_frame_scaled = df.copy()
-    data_frame_scaled[ft_columns] = scaler.fit_transform(data_frame_scaled[ft_columns])
-    return data_frame_scaled
-
-
-def analyze_feature_importance():
-    """
-    Analyze feature importance using Random Forest classifier.
-
-    Returns:
-        list: Top 60% most important features based on mean decrease impurity
-
-    Methods:
-        - RandomForestClassifier(): Ensemble method for feature importance calculation
-        - class_weight='balanced': Handle class imbalance
-        - feature_importances_: RF's intrinsic feature importance metric
-        - Rolling window statistics for time-series features
-    """
-    df_scaled = get_df_standardized()
-
-    features = df_scaled.columns.difference(['Trend'])
-    target = (df_scaled['Trend'] > 0.5).astype(int)
-
-    model = RandomForestClassifier(
-        n_estimators=500,
-        random_state=42,
-        class_weight='balanced',
-        max_depth=15,
-        min_samples_leaf=5,
-        max_features='sqrt'
-    )
-    model.fit(df_scaled[features], target)
-
-    importances = model.feature_importances_
-    feature_importances = list(zip(features, importances))
-    feature_importances.sort(key=lambda x: x[1], reverse=True)
-
-    print("Feature importances:")
-    for feature, importance in feature_importances:
-        print(f"{feature}: {importance:.4f}")
-
-    num_top_features = max(10, int(len(features) * 0.6))
-    top_features = [feature for feature, _ in feature_importances[:num_top_features]]
-    return top_features
-
-def add_technical_indicators(df):
-    """
-    Enhance dataframe with technical analysis indicators.
-
-    Args:
-        df (pd.DataFrame): Original dataframe with price data
-
-    Returns:
-        pd.DataFrame: Enhanced dataframe with 25+ technical indicators
-
-    Indicators Added:
-        - Moving Averages (SMA, EMA)
-        - Momentum Indicators (RSI, ROC, MACD)
-        - Volatility Measures (Rolling STD, Bollinger Bands)
-        - Trend Indicators (ADX, Stochastic Oscillator)
-
-    Methods:
-        - pandas.rolling(): Window calculations
-        - ewm(): Exponential weighted moving averages
-        - diff(): Price changes
-        - ffill/bfill: Handle NaN values from window calculations
-    """
-    df['SMA_7'] = df['BTC Close'].rolling(window=7).mean()
-    df['SMA_14'] = df['BTC Close'].rolling(window=14).mean()
-    df['SMA_30'] = df['BTC Close'].rolling(window=30).mean()
-
-    df['Price_Change_1d'] = df['BTC Close'].pct_change(periods=1)
-    df['Price_Change_7d'] = df['BTC Close'].pct_change(periods=7)
-    df['Price_Change_14d'] = df['BTC Close'].pct_change(periods=14)
-
-    df['Volatility_7d'] = df['BTC Close'].rolling(window=7).std()
-    df['Volatility_14d'] = df['BTC Close'].rolling(window=14).std()
-
-    # MACD
-    ema12 = df['BTC Close'].ewm(span=12).mean()
-    ema26 = df['BTC Close'].ewm(span=26).mean()
-    df['MACD'] = ema12 - ema26
-    df['MACD_Signal'] = df['MACD'].ewm(span=9).mean()
-    df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
-
-    # Bollinger Bands
-    window = 20
-    df['BB_Middle'] = df['BTC Close'].rolling(window=window).mean()
-    df['BB_Std'] = df['BTC Close'].rolling(window=window).std()
-    df['BB_Upper'] = df['BB_Middle'] + 2 * df['BB_Std']
-    df['BB_Lower'] = df['BB_Middle'] - 2 * df['BB_Std']
-    df['BB_Width'] = (df['BB_Upper'] - df['BB_Lower']) / df['BB_Middle']
-
-    # RSI
-    delta = df['BTC Close'].diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    avg_gain_14 = gain.rolling(window=14).mean()
-    avg_loss_14 = loss.rolling(window=14).mean()
-    rs_14 = avg_gain_14 / avg_loss_14
-    df['RSI_14'] = 100 - (100 / (1 + rs_14))
-
-    # Rate of Change
-    df['ROC_5'] = df['BTC Close'].pct_change(periods=5) * 100
-    df['ROC_10'] = df['BTC Close'].pct_change(periods=10) * 100
-    df['ROC_20'] = df['BTC Close'].pct_change(periods=20) * 100
-
-    # Stochastic Oscillator
-    n = 14
-    df['SO_K'] = 100 * ((df['BTC Close'] - df['BTC Low'].rolling(n).min()) /
-                        (df['BTC High'].rolling(n).max() - df['BTC Low'].rolling(n).min()))
-    df['SO_D'] = df['SO_K'].rolling(3).mean()
-
-    # Average Directional Index
-    high_delta = df['BTC High'].diff()
-    low_delta = df['BTC Low'].diff()
-
-    plus_dm = high_delta.where((high_delta > 0) & (high_delta > low_delta.abs()), 0)
-    minus_dm = low_delta.abs().where((low_delta < 0) & (low_delta.abs() > high_delta), 0)
-
-    tr1 = df['BTC High'] - df['BTC Low']
-    tr2 = (df['BTC High'] - df['BTC Close'].shift()).abs()
-    tr3 = (df['BTC Low'] - df['BTC Close'].shift()).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-
-    atr = tr.rolling(14).mean()
-    plus_di = 100 * (plus_dm.rolling(14).mean() / atr)
-    minus_di = 100 * (minus_dm.rolling(14).mean() / atr)
-
-    dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di)).fillna(0)
-    df['ADX'] = dx.rolling(14).mean()
-
-    # EMAs
-    df['EMA_5'] = df['BTC Close'].ewm(span=5).mean()
-    df['EMA_10'] = df['BTC Close'].ewm(span=10).mean()
-    df['EMA_21'] = df['BTC Close'].ewm(span=21).mean()
-
-    df = df.ffill().bfill()
-    return df
-
-
-def get_data_coordinates(look_back, top_features=None):
-    """
-        Prepare time-series sequences for model training.
+    def __init__(self, file_path="bitcoin_dataset.csv"):
+        """
+        Initializes the BitcoinAnalysis class with the specified file path.
 
         Args:
-            look_back (int): Number of historical time steps to use as features
-            top_features (list): Optional list of selected features
+            file_path (str): The path to the dataset file. Defaults to "bitcoin_dataset.csv".
+        """
+        self.gold_data = None
+        self.nasdaq_data = None
+        self.btc_data = None
+        self.file_path = file_path
+        self.df = self.load_data()
+        self.process_data()
+
+    def load_data(self):
+        """
+        Loads the dataset from the specified file path and preprocesses it.
 
         Returns:
-            tuple: (X, y, feature_names) shaped for time-series modeling
+            pd.DataFrame: The preprocessed DataFrame containing the dataset.
+        """
+        df = pd.read_csv(self.file_path)
+        df.columns = df.columns.str.strip()
+        df['Date'] = pd.to_datetime(df['Date'])
+        df.set_index('Date', inplace=True)
+        return df
 
-        Methods:
-            - StandardScaler(): Feature normalization
-            - numpy.array(): Create 3D array (samples, timesteps, features)
-            - pandas.difference(): Feature selection
-            - Sequence generation with sliding window
-    """
-    df = convert_df_date_time()
-    df.sort_index(inplace=True)
-    df = add_technical_indicators(df)
+    def process_data(self):
+        """
+        Processes the loaded dataset to extract Bitcoin, NASDAQ, and Gold market data.
+        """
+        btc_columns = ['BTC Open', 'BTC High', 'BTC Low', 'BTC Close', 'BTC Volume']
+        self.btc_data = self.df[btc_columns].copy()
+        self.btc_data.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
 
-    ft_columns = df.columns.difference(['Trend']) if 'Trend' in df.columns else df.columns
-    scaler = StandardScaler()
+        nasdaq_columns = ['NASDAQ Open', 'NASDAQ High', 'NASDAQ Low', 'NASDAQ Close', 'NASDAQ Volume']
+        self.nasdaq_data = self.df[nasdaq_columns].copy()
+        self.nasdaq_data.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
 
-    data_frame_scaled = df.copy()
-    data_frame_scaled[ft_columns] = scaler.fit_transform(data_frame_scaled[ft_columns])
-    df_scaled = data_frame_scaled
+        gold_columns = ['Gold Open', 'Gold High', 'Gold Low', 'Gold Close', 'Gold Volume']
+        self.gold_data = self.df[gold_columns].copy()
+        self.gold_data.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
 
-    if top_features:
-        valid_features = [f for f in top_features if f in df_scaled.columns]
-        features = valid_features
-    else:
-        features = df_scaled.columns.difference(['Trend'])
+    @staticmethod
+    def plot_candlestick(data, title):
+        """
+        Plots a candlestick chart for the given data.
 
-    data = df_scaled[features].values
-    target = (df_scaled['Trend'] > 0.5).astype(int).values
+        Args:
+            data (pd.DataFrame): DataFrame containing the market data.
+            title (str): Title of the plot.
+        """
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]})
+        fig.suptitle(title)
 
-    X, y = [], []
-    for i in range(len(data) - look_back):
-        X.append(data[i : i + look_back])
-        y.append(target[i + look_back])
+        dates = data.index
+        x = np.arange(len(dates))
 
-    X = np.array(X)
-    y = np.array(y)
-    return X, y, features
+        opens = data['Open']
+        highs = data['High']
+        lows = data['Low']
+        closes = data['Close']
 
+        colors = ['g' if close >= open else 'r' for open, close in zip(opens, closes)]
 
-def augment_minority_class(X, y):
-    """
-    Balance class distribution through synthetic sample generation.
+        width = 0.6
+        ax1.vlines(x, lows, highs, color='black', linewidth=1)
+        ax1.bar(x, closes - opens, width, bottom=opens, color=colors)
 
-    Args:
-        X (np.array): Feature matrix
-        y (np.array): Target vector
+        ax2.bar(x, data['Volume'], width, color=colors)
+        ax2.set_ylabel('Volume')
 
-    Returns:
-        tuple: Balanced (X, y) through linear interpolation and noise injection
+        ax1.set_xticklabels([])
+        ax2.set_xticks(x[::len(x) // 10])  # Show every nth date
+        ax2.set_xticklabels([d.strftime('%Y-%m-%d') for d in dates[::len(x) // 10]], rotation=45)
 
-    Methods:
-        - numpy.random.choice(): Minority sample selection
-        - Linear interpolation between samples
-        - Gaussian noise addition (μ=0, σ=0.01*feature_std)
-        - numpy.vstack()/concatenate(): Combine original and synthetic samples
-    """
-    unique, counts = np.unique(y, return_counts=True)
-    if len(counts) == 2 and abs(counts[0] - counts[1]) <= 5:
-        # effectively balanced, no augmentation
-        return X, y
+        # Set labels and grid
+        ax1.set_ylabel('Price')
+        ax1.grid(True, linestyle='--', alpha=0.7)
+        ax2.grid(True, linestyle='--', alpha=0.7)
 
-    class_counts = dict(zip(unique, counts))
-    minority_class = 0 if class_counts[0] < class_counts[1] else 1
-    majority_class = 1 - minority_class
-    num_to_augment = class_counts[majority_class] - class_counts[minority_class]
-    if num_to_augment <= 0:
-        return X, y
+        plt.tight_layout()
+        plt.show()
 
-    minority_indices = np.where(y == minority_class)[0]
-    augmented_X, augmented_y = [], []
+    def plot_all_candlesticks(self):
+        """
+        Plots candlestick charts for Bitcoin, NASDAQ, and Gold market data.
+        """
+        self.plot_candlestick(self.btc_data, 'Bitcoin Candlestick Chart')
+        self.plot_candlestick(self.nasdaq_data, 'NASDAQ Candlestick Chart')
+        self.plot_candlestick(self.gold_data, 'Gold Candlestick Chart')
 
-    for _ in range(num_to_augment):
-        idx1, idx2 = np.random.choice(minority_indices, 2, replace=len(minority_indices) < 2)
-        alpha = np.random.random()
-        new_sample = X[idx1] * alpha + X[idx2] * (1 - alpha)
+    def plot_correlation_heatmap(self):
+        """
+        Plots a heatmap of the correlation matrix for the dataset.
+        """
+        plt.figure(figsize=(10, 6))
+        corr_matrix = self.df.corr()
+        sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', fmt='.2f', linewidths=0.5)
+        plt.title("Feature Correlation Heatmap")
+        plt.show()
 
-        noise_scale = 0.01 * np.std(new_sample, axis=0)
-        noise = np.random.normal(0, noise_scale, new_sample.shape)
-        augmented_sample = new_sample + noise
-
-        augmented_X.append(augmented_sample)
-        augmented_y.append(minority_class)
-
-    augmented_X = np.array(augmented_X)
-    augmented_y = np.array(augmented_y)
-
-    X_balanced = np.vstack([X, augmented_X])
-    y_balanced = np.concatenate([y, augmented_y])
-    return X_balanced, y_balanced
-
-
-def get_split_data_length(X):
-    """
-        Calculate dataset splits for time-series cross-validation.
+    def prepare_ml_data(self):
+        """
+        Prepares the data for machine learning models by scaling and splitting it into training and testing sets.
 
         Returns:
-            tuple: (train_size, val_size) in samples
+            tuple: A tuple containing the scaled training and testing data, target values, scaler, and feature columns.
+        """
+        target_col = 'BTC Close'
+        feature_cols = ['NASDAQ Open', 'NASDAQ High', 'NASDAQ Low', 'NASDAQ Volume',
+                        'Gold Open', 'Gold High', 'Gold Low', 'Gold Volume']
 
-        Split Strategy:
-            - 70% training
-            - 15% validation
-            - 15% testing
-    """
-    train_size = int(len(X) * 0.70)
-    val_size = int(len(X) * 0.15)
-    return train_size, val_size
+        # Ensure only existing columns are used
+        feature_cols = [col for col in feature_cols if col in self.df.columns]
 
+        data = self.df[feature_cols]
+        target = self.df[target_col]
 
-def get_train_values(train_size, val_size, X, y):
-    """
-        Split data into training, validation, and test sets with class balancing.
+        # Shifting features by one day
+        data_shifted = data.shift(1).dropna()
+        target_shifted = target.loc[data_shifted.index]
+
+        # Splitting into training and testing data
+        split_ratio = 0.8
+        split_index = int(len(data_shifted) * split_ratio)
+
+        X_train = data_shifted.iloc[:split_index]
+        X_test = data_shifted.iloc[split_index:]
+        y_train = target_shifted.iloc[:split_index]
+        y_test = target_shifted.iloc[split_index:]
+
+        # Standardizing the data
+        scaler_X = StandardScaler()
+        scaler_y = StandardScaler()
+        X_train_scaled = scaler_X.fit_transform(X_train)
+        X_test_scaled = scaler_X.transform(X_test)
+        y_train_scaled = scaler_y.fit_transform(y_train.values.reshape(-1, 1)).ravel()
+
+        return X_train_scaled, X_test_scaled, y_train_scaled, y_test, scaler_y, feature_cols
+
+    def train_xgboost(self):
+        """
+        Trains an XGBoost model on the prepared data and evaluates its performance.
 
         Returns:
-            tuple: (X_train, y_train, X_val, y_val, X_test, y_test)
+            tuple: A tuple containing the trained model, feature importance DataFrame, and model parameters.
+        """
+        X_train_scaled, X_test_scaled, y_train_scaled, y_test, scaler_y, feature_cols = self.prepare_ml_data()
 
-        Methods:
-            - Array slicing for time-series splits
-            - augment_minority_class(): Applied to training set only
-            - numpy.unique(): Class distribution analysis
-    """
-    X_train, y_train = X[:train_size], y[:train_size]
-    X_val, y_val = X[train_size : train_size + val_size], y[train_size : train_size + val_size]
-    X_test, y_test = X[train_size + val_size :], y[train_size + val_size :]
+        # Define base model with fixed parameters instead of grid search
+        model = xgb.XGBRegressor(
+            n_estimators=200,
+            learning_rate=0.1,
+            max_depth=5,
+            objective='reg:squarederror',
+            random_state=42
+        )
 
-    X_train_bal, y_train_bal = augment_minority_class(X_train, y_train)
+        # Train the model
+        model.fit(X_train_scaled, y_train_scaled)
 
-    print("Balanced Training Class Distribution:", dict(zip(*np.unique(y_train_bal, return_counts=True))))
-    print("Validation Class Distribution:", dict(zip(*np.unique(y_val, return_counts=True))))
-    print("Test Class Distribution:", dict(zip(*np.unique(y_test, return_counts=True))))
+        feature_importance = model.feature_importances_
+        feature_importance_df = pd.DataFrame({
+            'Feature': feature_cols,
+            'Importance': feature_importance
+        }).sort_values(by='Importance', ascending=False)
 
-    return X_train_bal, y_train_bal, X_val, y_val, X_test, y_test
+        y_pred_scaled = model.predict(X_test_scaled)
+        y_pred = scaler_y.inverse_transform(y_pred_scaled.reshape(-1, 1)).ravel()
 
+        self._evaluate_model(y_test, y_pred, "XGBoost")
+        self._plot_predictions(y_test, y_pred, "XGBoost")
+        self._plot_feature_importance(feature_importance_df, "XGBoost")
 
-# ------------------------------
-#  Flatten Time-Series for XGB
-# ------------------------------
-def flatten_time_series(X):
-    """
-    Transform 3D time-series data to 2D for tree-based models.
+        return model, feature_importance_df, {
+            'n_estimators': 200,
+            'learning_rate': 0.1,
+            'max_depth': 5
+        }
 
-    Args:
-        X (np.array): 3D array of shape (samples, timesteps, features)
+    def train_svr(self):
+        """
+        Trains a Support Vector Regression (SVR) model on the prepared data and evaluates its performance.
 
-    Returns:
-        np.array: 2D array of shape (samples, timesteps*features)
+        Returns:
+            tuple: A tuple containing the trained model, feature importance DataFrame, and model parameters.
+        """
+        X_train_scaled, X_test_scaled, y_train_scaled, y_test, scaler_y, feature_cols = self.prepare_ml_data()
 
-    Methods:
-        - numpy.reshape(): Flatten temporal dimension
-    """
-    N, L, F = X.shape
-    return X.reshape(N, L * F)
+        param_grid = {
+            'C': [0.1, 1, 10],
+            'epsilon': [0.01, 0.1, 0.2],
+            'kernel': ['linear', 'rbf', 'poly']
+        }
 
+        model = SVR()
+        grid_search = GridSearchCV(estimator=model, param_grid=param_grid, cv=3,
+                                   scoring='neg_mean_squared_error', verbose=1, n_jobs=-1)
+        grid_search.fit(X_train_scaled, y_train_scaled)
 
-def training_model():
-    """
-    Train and evaluate XGBoost classifier on time-series Bitcoin data.
+        best_model = grid_search.best_estimator_
 
-    Returns:
-        tuple: (trained model, selected features)
+        importance_results = permutation_importance(best_model, X_test_scaled, y_test, n_repeats=10, random_state=42)
+        feature_importance_df = pd.DataFrame({
+            'Feature': feature_cols,
+            'Importance': importance_results.importances_mean
+        }).sort_values(by='Importance', ascending=False)
 
-    Pipeline Steps:
-        1. Feature importance analysis with Random Forest
-        2. Time-series feature engineering (60-day lookback)
-        3. Class balancing through synthetic minority oversampling
-        4. XGBoost training with early stopping
-        5. Comprehensive evaluation on test set
+        y_pred_scaled = best_model.predict(X_test_scaled)
+        y_pred = scaler_y.inverse_transform(y_pred_scaled.reshape(-1, 1)).ravel()
 
-    Evaluation Metrics:
-        - Accuracy, AUC-ROC, F1 Score
-        - Confusion Matrix
-        - Precision-Recall Analysis
-        - Optimal Threshold Calculation
+        self._evaluate_model(y_test, y_pred, "SVR")
+        self._plot_predictions(y_test, y_pred, "SVR")
+        self._plot_feature_importance(feature_importance_df, "SVR")
 
-    Methods:
-        - xgb.XGBClassifier(): Gradient boosted trees implementation
-        - Early stopping with 30-round patience
-        - sklearn.metrics: Comprehensive model evaluation
-        - matplotlib/seaborn: Visualization tools
-    """
+        return best_model, feature_importance_df, grid_search.best_params_
 
-    top_features = analyze_feature_importance()
+    @staticmethod
+    def _evaluate_model(y_true, y_pred, model_name):
+        """
+        Evaluates the performance of a model using mean absolute error, mean squared error, and root mean squared error.
 
-    look_back = 60
-    X, y, features = get_data_coordinates(look_back=look_back, top_features=top_features)
-    print(f"Original X shape (3D): {X.shape}, y shape: {y.shape}")
-    print(f"Using {len(features)} features: {features}")
+        Args:
+            y_true (array-like): True target values.
+            y_pred (array-like): Predicted target values.
+            model_name (str): Name of the model being evaluated.
+        """
+        mae = mean_absolute_error(y_true, y_pred)
+        mse = mean_squared_error(y_true, y_pred)
+        rmse = np.sqrt(mse)
 
-    train_size, val_size = get_split_data_length(X)
-    X_train, y_train, X_val, y_val, X_test, y_test = get_train_values(train_size, val_size, X, y)
-    print(f"Training samples: {len(X_train)}, Validation samples: {len(X_val)}, Test samples: {len(X_test)}")
+        print(f"\n{model_name} Evaluation:")
+        print(f"Mean Absolute Error: {mae:.2f}")
+        print(f"Mean Squared Error: {mse:.2f}")
+        print(f"Root Mean Squared Error: {rmse:.2f}")
 
-    X_train_flat = flatten_time_series(X_train)  # shape => (N_train, look_back*features)
-    X_val_flat   = flatten_time_series(X_val)
-    X_test_flat  = flatten_time_series(X_test)
+    @staticmethod
+    def _plot_predictions(y_test, y_pred, model_name):
+        """
+        Plots the actual vs predicted values for a given model.
 
-    model = xgb.XGBClassifier(
-        n_estimators=300,
-        max_depth=6,
-        learning_rate=0.01,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        random_state=42,
-        use_label_encoder=False,
-        eval_metric='logloss'
-    )
+        Args:
+            y_test (pd.Series): True target values.
+            y_pred (array-like): Predicted target values.
+            model_name (str): Name of the model.
+        """
+        plt.figure(figsize=(12, 6))
+        plt.plot(y_test.index, y_test, label='Actual', color='blue')
+        plt.plot(y_test.index, y_pred, label='Predicted', color='red', linestyle='dashed')
+        plt.xlabel('Date')
+        plt.ylabel('BTC Close Price')
+        plt.title(f'{model_name} Prediction vs Actual (Using Previous Day Features)')
+        plt.legend()
+        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+        plt.xticks(rotation=45)
+        plt.grid(True)
+        plt.show()
 
-    model.fit(
-        X_train_flat, y_train,
-        eval_set=[(X_val_flat, y_val)],
-        early_stopping_rounds=30,
-        verbose=True
-    )
+    @staticmethod
+    def _plot_feature_importance(feature_importance_df, model_name):
+        """
+        Plots the feature importance for a given model.
 
-    val_probs = model.predict_proba(X_val_flat)[:, 1]
-    val_preds = (val_probs > 0.5).astype(int)
-    val_acc = (val_preds == y_val).mean()
-    val_auc = roc_auc_score(y_val, val_probs) if len(set(y_val)) > 1 else 0
-    print(f"\n[Validation] Accuracy: {val_acc:.4f}, AUC: {val_auc:.4f}")
-
-    test_probs = model.predict_proba(X_test_flat)[:, 1]
-    test_preds = (test_probs > 0.5).astype(int)
-
-    accuracy = (test_preds == y_test).mean()
-    if len(set(y_test)) > 1:
-        test_auc = roc_auc_score(y_test, test_probs)
-    else:
-        test_auc = 0
-
-    print(f"[Test] Accuracy: {accuracy:.4f}, AUC: {test_auc:.4f}")
-
-    cm = confusion_matrix(y_test, test_preds)
-    print("Confusion Matrix:")
-    print(cm)
-
-    plt.figure(figsize=(6, 5))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                xticklabels=['Pred 0', 'Pred 1'],
-                yticklabels=['True 0', 'True 1'])
-    plt.title("Confusion Matrix (XGB)")
-    plt.tight_layout()
-    plt.savefig("bitcoin_xgb_confusion_matrix.png")
-    plt.show()
-
-    report = classification_report(y_test, test_preds)
-    print("Classification Report:")
-    print(report)
-
-    precision, recall, thresholds = precision_recall_curve(y_test, test_probs)
-    f1_scores = 2 * precision * recall / (precision + recall + 1e-10)
-    best_idx = f1_scores.argmax()
-    if best_idx < len(thresholds):
-        best_threshold = thresholds[best_idx]
-    else:
-        best_threshold = 0.5
-
-    print(f"Optimal threshold: {best_threshold:.4f}")
-    opt_preds = (test_probs > best_threshold).astype(int)
-    opt_accuracy = (opt_preds == y_test).mean()
-    opt_cm = confusion_matrix(y_test, opt_preds)
-    opt_report = classification_report(y_test, opt_preds)
-    opt_f1 = f1_score(y_test, opt_preds)
-
-    print("\nMetrics with optimal threshold:")
-    print(f"Accuracy: {opt_accuracy:.4f}")
-    print(f"F1 Score: {opt_f1:.4f}")
-    print("Confusion Matrix:")
-    print(opt_cm)
-    print("Classification Report:")
-    print(opt_report)
-
-    return model, features
+        Args:
+            feature_importance_df (pd.DataFrame): DataFrame containing feature importance values.
+            model_name (str): Name of the model.
+        """
+        plt.figure(figsize=(10, 6))
+        plt.barh(feature_importance_df['Feature'], feature_importance_df['Importance'], color='skyblue')
+        plt.xlabel('Importance')
+        plt.ylabel('Feature')
+        plt.title(f'Feature Importance in {model_name} Model')
+        plt.gca().invert_yaxis()
+        plt.show()
 
 if __name__ == "__main__":
-    model, selected_features = training_model()
+    analysis = BitcoinAnalysis()
+    analysis.plot_all_candlesticks()
+    analysis.plot_correlation_heatmap()
+    xgb_model, xgb_importance, xgb_params = analysis.train_xgboost()
+    svr_model, svr_importance, svr_params = analysis.train_svr()

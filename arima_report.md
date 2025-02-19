@@ -59,3 +59,64 @@ The ARIMA model provides a baseline for predicting Bitcoin close prices. While i
 ---
 
 This expanded report provides a more comprehensive overview of the methodology, objectives, and context behind using an ARIMA model for Bitcoin price prediction. It also includes a literature review that discusses both traditional and modern approaches to forecasting.
+
+### Interpretation of the ARIMA Model Results for Bitcoin Price Prediction
+
+#### **1. General Information**
+- **Model Used:** ARIMA(1,1,1) (AutoRegressive Integrated Moving Average)
+- **Number of Observations:** 2628 (Dates: 09-17-2014 to 11-26-2021)
+- **Log Likelihood:** -21085.036
+- **AIC (Akaike Information Criterion):** 42176.072
+- **BIC (Bayesian Information Criterion):** 42193.692
+- **HQIC (Hannan-Quinn Criterion):** 42182.453
+
+AIC and BIC are model selection criteria. Lower values generally indicate a better fit, but they are primarily useful for comparing models rather than absolute quality assessment.
+
+#### **2. Model Parameters**
+- **AR(1) Coefficient (`ar.L1` = -0.6107)**  
+  - This indicates that the previous day's Bitcoin price negatively impacts the current price (mean-reverting behavior).
+  - A negative coefficient suggests a correctional movement in price trends.
+  
+- **MA(1) Coefficient (`ma.L1` = 0.5687)**  
+  - This reflects short-term shock adjustments in Bitcoin's price.
+  - A positive coefficient suggests that past errors (unexpected price movements) have a corrective effect on future prices.
+  
+- **Sigma² (`sigma2` = 549,400)**  
+  - This represents the variance of residuals (errors) in the model.
+  - A high value suggests high volatility in Bitcoin prices.
+
+#### **3. Model Diagnostics**
+- **Ljung-Box Test (Q-Stat = 0.01, p-value = 0.90)**  
+  - The high p-value (>0.05) suggests no significant autocorrelation in residuals, indicating that the model sufficiently captures dependencies.
+  
+- **Jarque-Bera Test (JB = 53611.48, p-value = 0.00)**  
+  - The very low p-value (<0.05) indicates that residuals are not normally distributed.
+  - High kurtosis (25.13) means there are extreme price fluctuations (fat-tailed distribution), a common feature in financial time series.
+
+- **Heteroskedasticity (H = 5948.79, p-value = 0.00)**  
+  - The high heteroskedasticity value indicates that price volatility is not constant over time.
+  - This is expected in Bitcoin data, which experiences periods of high price swings.
+
+#### **4. Model Performance**
+- **Mean Squared Error (MSE) = 717,954,450.58**  
+  - A high MSE suggests significant prediction errors.
+  - This could be due to Bitcoin's extreme volatility, which ARIMA models struggle to capture effectively.
+
+---
+
+### **Conclusion: Is ARIMA Suitable for Bitcoin Price Prediction?**
+1. **Strengths:**
+   - Captures short-term trends and autocorrelation in Bitcoin prices.
+   - No significant autocorrelation in residuals, meaning the model is well-fitted to the given data.
+
+2. **Weaknesses:**
+   - High MSE indicates poor predictive accuracy, likely due to Bitcoin's non-stationary and highly volatile nature.
+   - Residuals are not normally distributed, suggesting the model does not fully capture the complexity of Bitcoin's price movements.
+   - The presence of high heteroskedasticity means the model struggles with periods of extreme price fluctuations.
+
+3. **Alternative Approaches:**
+   - **XGBoost or LSTM models** might perform better for Bitcoin price prediction as they can capture nonlinear patterns and complex dependencies in financial data.
+   - **Hybrid models** (e.g., ARIMA + XGBoost) could leverage ARIMA for short-term linear trends and XGBoost for nonlinear relationships.
+
+#### **Final Verdict:**  
+While ARIMA provides a reasonable baseline model, its high MSE and inability to handle Bitcoin’s volatility suggest that machine learning-based models like **XGBoost or LSTMs** would likely yield better predictive performance. 🚀
